@@ -18,6 +18,7 @@ import fetch from 'node-fetch'
 import qs from 'querystring'
 import treeKill from 'tree-kill'
 import { once } from 'events'
+import vm from 'vm'
 
 import server from 'next/dist/server/next'
 import _pkg from 'next/package.json'
@@ -437,11 +438,72 @@ export function launchApp(
   )
 }
 
+/**
+ * Read a JavaScript file and return the exports.
+ *
+ * @param path The path to the JavaScript file.
+ * @returns The exports of the JavaScript file.
+ */
+function readJS(path: string) {
+  const data = readFileSync(path, 'utf8')
+  const script = new vm.Script(data, { filename: path })
+  const context = { module: { exports: {} } }
+  script.runInNewContext(context)
+  return context.module.exports
+}
+
+/**
+ * Check if the directory provides an ESLint configuration.
+ *
+ * @param dir The directory to check.
+ * @returns Whether the directory provides an ESLint configuration.
+ */
+export function shouldDisableLinting(dir: string) {
+  try {
+    // If the project already has a `next.config.js` file that includes an eslint
+    // config, then don't disable linting.
+    if (
+      existsSync(path.join(dir, 'next.config.js')) &&
+      'eslint' in readJS(path.join(dir, 'next.config.js'))
+    ) {
+      return false
+    }
+
+    // If some of these files exist, we should not disable linting.
+    if (
+      ['.eslintrc.json', '.eslintrc.js', '.eslintrc'].some((file) =>
+        existsSync(path.join(dir, file))
+      )
+    ) {
+      return false
+    }
+
+    // If the `eslintConfig` field is present in the `package.json` file, we
+    // should not disable linting.
+    if (
+      existsSync(path.join(dir, 'package.json')) &&
+      readJson(path.join(dir, 'package.json')).eslintConfig
+    ) {
+      return false
+    }
+
+    return true
+  } catch {
+    // An error ocurred while checking the directory, so we should not disable
+    // linting.
+    return false
+  }
+}
+
 export function nextBuild(
   dir: string,
   args: string[] = [],
   opts: NextOptions = {}
 ) {
+  // Disable linting if the directory provides an ESLint configuration. This
+  // prevents the project's eslint configuration from affecting the test.
+  if (shouldDisableLinting(dir)) args.push('--no-lint')
+
   return runNextCommand(['build', dir, ...args], opts)
 }
 
